@@ -362,11 +362,11 @@ diagnostic objects.
 |----|--------|------------|-------------|
 | `no-mouse-activity` | 0.20 | low | Pointer clicks with zero mouse/touch events |
 | `click-without-mouse-movement` | 0.35 | high | Click with no mouse or touch activity in the prior 2s |
-| `linear-mouse-movement` | 0.25 | medium | Straight path, uniform speed |
+| `linear-mouse-movement` | 0.25 | medium | Straight path cut into equal steps or covered at uniform speed |
 | `zero-mouse-movement-deltas` | 0.30 | medium | More than 50 mouse events all report zero `movementX`/`movementY` |
 | `cdp-input-coordinate-leak` | 0.20 | low | Two distinct trusted pointer positions have identical page/screen coordinates; a soft CDP hint because ordinary window/scroll geometry can collide |
 | `teleport-mouse` | 0.40 | high | Implausible cursor jumps between closely-spaced events |
-| `linear-touch-movement` | 0.25 | medium | Swipe path is straight with uniform speed |
+| `linear-touch-movement` | 0.25 | medium | Swipe path is straight, cut into equal steps or at uniform speed |
 | `teleport-touch` | 0.40 | high | Contact point jumps implausibly mid-gesture |
 | `linear-tap-rhythm` | 0.30 | medium | Robotic or superhuman tap intervals |
 | `linear-scroll` | 0.30 | medium | Uniform scroll deltas/timing |

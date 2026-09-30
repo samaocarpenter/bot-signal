@@ -49,12 +49,17 @@ const MIN_KEYS_FOR_LINEAR = 5;
 
 /** Coefficient of variation cutoffs for "too uniform". Lower = more robotic. */
 const MOUSE_CV_SPEED_MAX = 0.08;
+const MOUSE_CV_STEP_MAX = 0.08;
 const SCROLL_CV_DELTA_MAX = 0.1;
 const SCROLL_CV_INTERVAL_MAX = 0.12;
 const TYPING_CV_INTERVAL_MAX = 0.08;
 
 /** Max perpendicular deviation (pixels) allowed for a "straight" mouse line. */
 const MOUSE_MAX_LINE_DEVIATION = 4;
+
+/** Mean step (pixels) below which a trace is too slow or still to judge —
+ * integer coordinates make tiny steps uniform by quantization alone. */
+const MOUSE_MIN_STEP_PX = 3;
 
 /** Typing faster than this average interval (ms) is considered superhuman. */
 const TYPING_SUPERHUMAN_INTERVAL_MS = 25;
@@ -149,32 +154,45 @@ function createSignal(
   };
 }
 
+/**
+ * A straight path cut into equal steps, or covered at equal speed. Step length
+ * is what an automation script actually dictates: CDP round-trips and the
+ * event loop jitter the arrival times by several milliseconds, so the speeds
+ * of a perfectly interpolated path rarely stay under the CV cutoff.
+ */
 function isLinearPointerSegment(points: PointSample[]): boolean {
+  const steps: number[] = [];
   const speeds: number[] = [];
 
   for (let index = 1; index < points.length; index += 1) {
     const previous = points[index - 1];
     const current = points[index];
+    const distance = Math.hypot(current.x - previous.x, current.y - previous.y);
     const elapsed = current.t - previous.t;
 
-    if (elapsed <= 0) {
-      continue;
+    steps.push(distance);
+    if (elapsed > 0) {
+      speeds.push(distance / elapsed);
     }
-
-    speeds.push(
-      Math.hypot(current.x - previous.x, current.y - previous.y) / elapsed,
-    );
   }
 
-  if (speeds.length < 5) {
+  if (
+    steps.length < 5 ||
+    mean(steps) < MOUSE_MIN_STEP_PX ||
+    maxLineDeviation(points) >= MOUSE_MAX_LINE_DEVIATION
+  ) {
     return false;
   }
 
-  return coefficientOfVariation(speeds) < MOUSE_CV_SPEED_MAX && maxLineDeviation(points) < MOUSE_MAX_LINE_DEVIATION;
+  return (
+    coefficientOfVariation(steps) < MOUSE_CV_STEP_MAX ||
+    (speeds.length >= 5 && coefficientOfVariation(speeds) < MOUSE_CV_SPEED_MAX)
+  );
 }
 
 /**
- * Mouse path is a near-perfect line traversed at near-constant speed.
+ * Mouse path is a near-perfect line cut into equal steps or traversed at
+ * near-constant speed.
  * @internal
  */
 export function hasLinearMouseMovement(mouseMoves: MouseSample[]): boolean {

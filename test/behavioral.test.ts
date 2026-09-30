@@ -131,8 +131,23 @@ describe("behavioral analysis", () => {
     expect(hasLinearMouseMovement(createHumanMouseMoves())).toBe(false);
   });
 
-  it("requires enough usable mouse speed samples before flagging linear movement", () => {
+  it("requires enough steps before flagging linear movement", () => {
     expect(hasLinearMouseMovement(createLinearMouseMoves(5))).toBe(false);
+  });
+
+  it("flags equal steps along a line whatever the arrival timing", () => {
+    // Recorded from Playwright `mouse.move(..., { steps })` in Chromium: the
+    // CDP round-trip jitters the gaps, so speed alone never looks uniform.
+    const gaps = [19, 5, 8, 9, 9, 7, 9, 8, 8, 9, 8, 8, 9, 8];
+    let t = 0;
+    const jittered: MouseSample[] = [{ x: 0, y: 0, t, isTrusted: true }];
+    for (const [index, gap] of gaps.entries()) {
+      t += gap;
+      jittered.push({ x: (index + 1) * 30, y: (index + 1) * 15, t, isTrusted: true });
+    }
+    expect(hasLinearMouseMovement(jittered)).toBe(true);
+
+    // A synchronous loop stamps every event with the same millisecond.
     expect(
       hasLinearMouseMovement([
         { x: 0, y: 0, t: 0, isTrusted: true },
@@ -142,17 +157,51 @@ describe("behavioral analysis", () => {
         { x: 40, y: 40, t: 0, isTrusted: true },
         { x: 50, y: 50, t: 0, isTrusted: true },
       ]),
-    ).toBe(false);
-    expect(
-      hasLinearMouseMovement([
-        { x: 10, y: 10, t: 0, isTrusted: true },
-        { x: 10, y: 10, t: 16, isTrusted: true },
-        { x: 10, y: 10, t: 32, isTrusted: true },
-        { x: 10, y: 10, t: 48, isTrusted: true },
-        { x: 10, y: 10, t: 64, isTrusted: true },
-        { x: 10, y: 10, t: 80, isTrusted: true },
-      ]),
     ).toBe(true);
+  });
+
+  it("flags a constant-speed line whose step lengths follow frame timing", () => {
+    // A time-based tween: each step covers exactly `gap` ms at 2 px/ms.
+    const gaps = [16, 33, 16, 17, 33, 16];
+    let t = 0;
+    const tween: MouseSample[] = [{ x: 0, y: 0, t, isTrusted: true }];
+    for (const gap of gaps) {
+      t += gap;
+      tween.push({ x: t * 2, y: 0, t, isTrusted: true });
+    }
+
+    expect(hasLinearMouseMovement(tween)).toBe(true);
+  });
+
+  it("flags equal steps out and back along the same line", () => {
+    const sweep = [0, 1, 2, 3, 2, 1, 0].map((position, index) => ({
+      x: position * 30,
+      y: position * 30,
+      t: index * 16,
+      isTrusted: true,
+    }));
+
+    expect(hasLinearMouseMovement(sweep)).toBe(true);
+  });
+
+  it("does not flag still, creeping, or bent mouse traces", () => {
+    const still: MouseSample[] = [];
+    const creeping: MouseSample[] = [];
+    const bent: MouseSample[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      still.push({ x: 10, y: 10, t: index * 16, isTrusted: true });
+      creeping.push({ x: index * 2, y: 0, t: index * 16, isTrusted: true });
+      bent.push({
+        x: index * 30,
+        y: index < 4 ? index * 30 : (7 - index) * 30,
+        t: index * 16,
+        isTrusted: true,
+      });
+    }
+
+    expect(hasLinearMouseMovement(still)).toBe(false);
+    expect(hasLinearMouseMovement(creeping)).toBe(false);
+    expect(hasLinearMouseMovement(bent)).toBe(false);
   });
 
   it("detects teleport mouse movement", () => {

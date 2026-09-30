@@ -32,6 +32,31 @@ describe("patchright behavioral detection — automated interaction patterns", (
     await context.close();
   });
 
+  it("flags a straight CDP mouse path with irregular timing", async () => {
+    const { context, page } = await openHarnessPage(browser, server.baseUrl);
+    // Real CDP Input events: their arrival times jitter with the round-trip,
+    // unlike the evenly slept dispatchEvent loop in the "linear-mouse" scenario.
+    await page.evaluate(() => {
+      const detector = window.__detection.createBehavioralClientDetector({ context: window });
+      Object.assign(window, { __stepObservation: detector.observe(1_500) });
+    });
+
+    const waits = [5, 25, 12, 30, 8];
+    for (let step = 0; step <= 20; step += 1) {
+      await page.mouse.move(50 + step * 30, 50 + step * 15);
+      await page.waitForTimeout(waits[step % waits.length]);
+    }
+
+    type Observation = Promise<{ signals: Array<{ id: string; triggered: boolean }> }>;
+    const result = await page.evaluate(
+      () => (window as unknown as { __stepObservation: Observation }).__stepObservation,
+    );
+
+    expect(triggeredSignalIds(result.signals)).toContain("linear-mouse-movement");
+
+    await context.close();
+  });
+
   it("flags teleport mouse jumps", async () => {
     const { context, page } = await openHarnessPage(browser, server.baseUrl);
     const result = await runBehavioralScenario(page, "teleport-mouse", 500);
