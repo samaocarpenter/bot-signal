@@ -24,11 +24,12 @@ describe("patchright behavioral analysis exports in browser", () => {
       const detection = (window as any).__detection;
       return detection.analyzeBehavioralSamples({
         mouseMoves: [
+          // Straight and even, but no step repeats exactly.
           { x: 0, y: 0, t: 0, isTrusted: true },
           { x: 40, y: 20, t: 16, isTrusted: true },
-          { x: 80, y: 40, t: 32, isTrusted: true },
+          { x: 82, y: 41, t: 32, isTrusted: true },
           { x: 120, y: 60, t: 48, isTrusted: true },
-          { x: 160, y: 80, t: 64, isTrusted: true },
+          { x: 162, y: 81, t: 64, isTrusted: true },
           { x: 200, y: 100, t: 80, isTrusted: true },
         ],
         scrolls: [],

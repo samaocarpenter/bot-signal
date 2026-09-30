@@ -17,6 +17,14 @@ const DEFAULT_SCORE_THRESHOLD = 0.55;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_SAMPLE_WINDOW_MS = 60_000;
 
+/** A click counts as centred when it lands this close to an element's centre. */
+const CENTERED_CLICK_TOLERANCE_PX = 1;
+/** Smaller elements are too easy to hit dead-centre by chance. */
+const CENTERED_CLICK_MIN_TARGET_PX = 16;
+/** The target plus its nearest ancestors — automation aims at the located
+ * element, which is often the parent of the text or icon actually hit. */
+const CENTERED_CLICK_MAX_DEPTH = 4;
+
 type Listener = {
   target: EventTarget;
   type: string;
@@ -32,6 +40,33 @@ function pruneStream(stream: Array<{ t: number }>, cutoff: number): void {
   if (firstFresh > 0) {
     stream.splice(0, firstFresh);
   }
+}
+
+/**
+ * Whether the click landed on the centre of its target or a near ancestor —
+ * where Playwright, Puppeteer, and Selenium aim by default.
+ */
+function isCenteredOnTarget(event: MouseEvent): boolean {
+  let element = event.target as Element | null;
+
+  for (
+    let depth = 0;
+    element && typeof element.getBoundingClientRect === "function" && depth < CENTERED_CLICK_MAX_DEPTH;
+    depth += 1
+  ) {
+    const rect = element.getBoundingClientRect();
+    if (
+      rect.width >= CENTERED_CLICK_MIN_TARGET_PX &&
+      rect.height >= CENTERED_CLICK_MIN_TARGET_PX &&
+      Math.abs(event.clientX - (rect.left + rect.width / 2)) <= CENTERED_CLICK_TOLERANCE_PX &&
+      Math.abs(event.clientY - (rect.top + rect.height / 2)) <= CENTERED_CLICK_TOLERANCE_PX
+    ) {
+      return true;
+    }
+    element = element.parentElement;
+  }
+
+  return false;
 }
 
 function createEmptySamples(observationMs = 0): Required<BehavioralSamples> {
@@ -74,6 +109,11 @@ export function createBehavioralClientDetector(
   let isActive = false;
   let observeTimer: ReturnType<typeof setTimeout> | undefined;
   let observeResolve: ((result: BehavioralClientResult) => void) | undefined;
+  // Event timestamps, not Date.now(): a scripted press and release land well
+  // inside one millisecond.
+  let pressStartedAt: number | undefined;
+  let lastPressMs: number | undefined;
+  let lastPointerPosition: { x: number; y: number } | undefined;
 
   const pruneRetainedSamples = (now = Date.now()): void => {
     if (!Number.isFinite(sampleWindowMs)) {
@@ -124,11 +164,30 @@ export function createBehavioralClientDetector(
     listeners.push({ target, type, handler });
   };
 
+  // Chromium fires `pointermove` just before each `mousemove`, carrying the
+  // fractional position that `MouseEvent.clientX/Y` truncates away.
+  const onPointerMove = (event: Event): void => {
+    const pointerEvent = event as PointerEvent;
+    lastPointerPosition =
+      pointerEvent.pointerType === "mouse"
+        ? { x: pointerEvent.clientX, y: pointerEvent.clientY }
+        : undefined;
+  };
+
   const onMouseMove = (event: Event): void => {
     const mouseEvent = event as MouseEvent;
+    const pointer = lastPointerPosition;
+    lastPointerPosition = undefined;
+    const precise =
+      pointer &&
+      Math.abs(pointer.x - mouseEvent.clientX) < 1 &&
+      Math.abs(pointer.y - mouseEvent.clientY) < 1
+        ? { preciseX: pointer.x, preciseY: pointer.y }
+        : {};
     record<MouseSample>(samples.mouseMoves, {
       x: mouseEvent.clientX,
       y: mouseEvent.clientY,
+      ...precise,
       movementX: mouseEvent.movementX,
       movementY: mouseEvent.movementY,
       pageX: mouseEvent.pageX,
@@ -159,9 +218,24 @@ export function createBehavioralClientDetector(
     });
   };
 
+  const onMouseDown = (event: Event): void => {
+    pressStartedAt = event.timeStamp;
+    lastPressMs = undefined;
+  };
+
+  const onMouseUp = (event: Event): void => {
+    lastPressMs =
+      pressStartedAt === undefined ? undefined : event.timeStamp - pressStartedAt;
+    pressStartedAt = undefined;
+  };
+
   const onClick = (event: Event): void => {
     const mouseEvent = event as MouseEvent;
+    const pressMs = lastPressMs;
+    lastPressMs = undefined;
     record<ClickSample>(samples.clicks, {
+      ...(pressMs === undefined ? {} : { pressMs }),
+      isTargetCentered: isCenteredOnTarget(mouseEvent),
       x: mouseEvent.clientX,
       y: mouseEvent.clientY,
       t: Date.now(),
@@ -211,9 +285,12 @@ export function createBehavioralClientDetector(
 
     isActive = true;
     startedAt = Date.now();
+    addListener(context, "pointermove", onPointerMove);
     addListener(context, "mousemove", onMouseMove);
     addListener(context, "wheel", onWheel);
     addListener(context, "keydown", onKeyDown);
+    addListener(context, "mousedown", onMouseDown);
+    addListener(context, "mouseup", onMouseUp);
     addListener(context, "click", onClick);
     addListener(context, "touchstart", onTouchStart);
     addListener(context, "touchmove", onTouchMove);
@@ -309,7 +386,10 @@ export {
 export {
   buildBehavioralSignals,
   hasCdpInputCoordinateLeak,
+  hasCenteredClicks,
   hasClickWithoutMouseMovement,
+  hasInstantClickPress,
+  hasInterpolatedMouseMovement,
   hasLinearMouseMovement,
   hasLinearScroll,
   hasLinearTapRhythm,

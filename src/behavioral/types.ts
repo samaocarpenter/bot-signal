@@ -23,6 +23,9 @@ export interface BehavioralSampleCounts {
 export interface MouseSample {
   x: number;
   y: number;
+  /** Fractional position from the matching `pointermove`; Chromium truncates `MouseEvent.clientX/Y`. */
+  preciseX?: number;
+  preciseY?: number;
   /** Browser-reported delta from the previous mouse event, when collected. */
   movementX?: number;
   /** Browser-reported delta from the previous mouse event, when collected. */
@@ -65,6 +68,10 @@ export interface ClickSample {
   screenY?: number;
   /** Whether browser chrome was hidden when this event was collected. */
   isFullscreen?: boolean;
+  /** Milliseconds from the preceding `mousedown` to `mouseup`; absent when the press was not observed. */
+  pressMs?: number;
+  /** Landed within 1px of the centre of the target or one of its nearest ancestors. */
+  isTargetCentered?: boolean;
 }
 
 export interface TouchSample {

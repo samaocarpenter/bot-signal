@@ -37,6 +37,7 @@ const TELEPORT_ANY_DISTANCE_PX = 600;
 // trace, so a scripted burst can't hide inside replayed human noise by sitting
 // at an off-grid offset.
 const MOUSE_LINEAR_WINDOW = 14;
+const MOUSE_INTERPOLATION_WINDOW = 6;
 const SCROLL_LINEAR_WINDOW = 8;
 
 /** Minimum samples required before we consider a trace for linearity. */
@@ -60,6 +61,17 @@ const MOUSE_MAX_LINE_DEVIATION = 4;
 /** Mean step (pixels) below which a trace is too slow or still to judge —
  * integer coordinates make tiny steps uniform by quantization alone. */
 const MOUSE_MIN_STEP_PX = 3;
+
+/** Steps (pixels, per axis) this close count as identical. Scripted
+ * interpolation repeats a step to float precision; a hand never repeats one. */
+const MOUSE_INTERPOLATION_TOLERANCE_PX = 0.05;
+
+/** A physical button cannot be pressed and released this fast; CDP Input
+ * delivers `mousedown` and `mouseup` within a fraction of a millisecond. */
+const INSTANT_PRESS_MAX_MS = 5;
+
+/** One dead-centre click is luck; repeated ones are aim. */
+const MIN_CENTERED_CLICKS = 2;
 
 /** Typing faster than this average interval (ms) is considered superhuman. */
 const TYPING_SUPERHUMAN_INTERVAL_MS = 25;
@@ -203,6 +215,38 @@ export function hasLinearMouseMovement(mouseMoves: MouseSample[]): boolean {
   return anyLinearWindow(mouseMoves, MOUSE_LINEAR_WINDOW, isLinearPointerSegment);
 }
 
+function isInterpolatedMouseSegment(moves: MouseSample[]): boolean {
+  const x = (move: MouseSample) => move.preciseX ?? move.x;
+  const y = (move: MouseSample) => move.preciseY ?? move.y;
+  const stepX = x(moves[1]) - x(moves[0]);
+  const stepY = y(moves[1]) - y(moves[0]);
+
+  if (Math.hypot(stepX, stepY) < MOUSE_MIN_STEP_PX) {
+    return false;
+  }
+
+  return moves.slice(1).every(
+    (move, index) =>
+      Math.abs(x(move) - x(moves[index]) - stepX) <= MOUSE_INTERPOLATION_TOLERANCE_PX &&
+      Math.abs(y(move) - y(moves[index]) - stepY) <= MOUSE_INTERPOLATION_TOLERANCE_PX,
+  );
+}
+
+/**
+ * Consecutive mouse moves repeat the same step vector — the output of
+ * `mouse.move(x, y, { steps })` and similar interpolation. Compared on the
+ * fractional `pointermove` position where the browser provides one, since
+ * Chromium truncates `MouseEvent` coordinates.
+ * @internal
+ */
+export function hasInterpolatedMouseMovement(mouseMoves: MouseSample[]): boolean {
+  if (mouseMoves.length < MIN_MOUSE_FOR_LINEAR) {
+    return false;
+  }
+
+  return anyLinearWindow(mouseMoves, MOUSE_INTERPOLATION_WINDOW, isInterpolatedMouseSegment);
+}
+
 /** More than 50 mouse events all report zero browser-provided movement deltas. */
 export function hasZeroMouseMovementDeltas(mouseMoves: MouseSample[]): boolean {
   return mouseMoves.length >= MIN_MOUSE_FOR_ZERO_DELTAS &&
@@ -315,6 +359,36 @@ export function hasClickWithoutMouseMovement(
       isPointerClick(click) &&
       !hasRecentSample(mouseMoves, click.t, CLICK_ORIGIN_WINDOW_MS) &&
       !hasRecentSample(touches, click.t, CLICK_ORIGIN_WINDOW_MS),
+  );
+}
+
+/**
+ * A mouse click was released within a few milliseconds of being pressed.
+ * Tap-driven clicks are exempt: the browser synthesizes their press and
+ * release together.
+ * @internal
+ */
+export function hasInstantClickPress(
+  clicks: ClickSample[],
+  touches: TouchSample[] = [],
+): boolean {
+  return clicks.some(
+    (click) =>
+      isPointerClick(click) &&
+      click.pressMs !== undefined &&
+      click.pressMs < INSTANT_PRESS_MAX_MS &&
+      !hasRecentSample(touches, click.t, CLICK_ORIGIN_WINDOW_MS),
+  );
+}
+
+/**
+ * Repeated clicks landed dead-centre on their target element.
+ * @internal
+ */
+export function hasCenteredClicks(clicks: ClickSample[]): boolean {
+  return (
+    clicks.filter((click) => isPointerClick(click) && click.isTargetCentered === true)
+      .length >= MIN_CENTERED_CLICKS
   );
 }
 
@@ -510,6 +584,27 @@ export function buildBehavioralSignals(samples: BehavioralSamples): BehavioralSi
       "Mouse path is unusually straight with uniform speed",
       hasLinearMouseMovement(samples.mouseMoves),
       0.25,
+      "medium",
+    ),
+    createSignal(
+      "interpolated-mouse-path",
+      "Consecutive mouse moves repeated an identical step",
+      hasInterpolatedMouseMovement(samples.mouseMoves),
+      0.4,
+      "high",
+    ),
+    createSignal(
+      "instant-click-press",
+      "A mouse button was released within milliseconds of being pressed",
+      hasInstantClickPress(samples.clicks, touches),
+      0.3,
+      "medium",
+    ),
+    createSignal(
+      "centered-clicks",
+      "Repeated clicks landed dead-centre on their target elements",
+      hasCenteredClicks(samples.clicks),
+      0.35,
       "medium",
     ),
     createSignal(

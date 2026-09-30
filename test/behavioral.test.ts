@@ -5,7 +5,10 @@ import {
   buildBehavioralSignals,
   createBehavioralClientDetector,
   hasCdpInputCoordinateLeak,
+  hasCenteredClicks,
   hasClickWithoutMouseMovement,
+  hasInstantClickPress,
+  hasInterpolatedMouseMovement,
   hasLinearMouseMovement,
   hasLinearScroll,
   hasLinearTapRhythm,
@@ -985,5 +988,158 @@ describe("touch gesture analysis", () => {
     });
     expect(result.suspicionScore).toBe(0);
     expect(result.isLegitClient).toBe(true);
+  });
+});
+
+describe("automation input signatures", () => {
+  // Recorded from Playwright `mouse.move(900, 500, { steps: 10 })` in Chromium:
+  // `pointermove` carries the exact interpolated position, `mousemove` truncates it.
+  const interpolated: MouseSample[] = [
+    [953.88, 396], [948.492, 406.4], [943.104, 416.8], [937.716, 427.2],
+    [932.328, 437.6], [926.94, 448], [921.552, 458.4],
+  ].map(([x, y], index) => ({
+    x: Math.trunc(x),
+    y: Math.trunc(y),
+    preciseX: x,
+    preciseY: y,
+    t: index * 8,
+    isTrusted: true,
+  }));
+
+  it("detects mouse moves that repeat an identical step", () => {
+    expect(hasInterpolatedMouseMovement(interpolated)).toBe(true);
+    // Whole-pixel paths without pointer precision still match when exact.
+    expect(
+      hasInterpolatedMouseMovement(
+        [0, 1, 2, 3, 4, 5].map((index) => ({ x: index * 10, y: index * 5, t: index * 16, isTrusted: true })),
+      ),
+    ).toBe(true);
+    // A scripted run is found inside a longer, organic trace.
+    const organic = [
+      { x: 0, y: 0, t: 0, isTrusted: true },
+      { x: 18, y: 4, t: 31, isTrusted: true },
+      { x: 52, y: 19, t: 88, isTrusted: true },
+    ];
+    expect(hasInterpolatedMouseMovement([...organic, ...interpolated])).toBe(true);
+  });
+
+  it("does not flag truncated, tiny, short, or uneven mouse steps", () => {
+    const truncated = interpolated.map(({ x, y, t, isTrusted }) => ({ x, y, t, isTrusted }));
+    const tiny = [0, 1, 2, 3, 4, 5].map((index) => ({ x: index * 2, y: 0, t: index * 16, isTrusted: true }));
+    const uneven = [0, 11, 23, 34, 46, 57].map((x, index) => ({ x, y: x / 2, t: index * 16, isTrusted: true }));
+
+    expect(hasInterpolatedMouseMovement(truncated)).toBe(false);
+    expect(hasInterpolatedMouseMovement(tiny)).toBe(false);
+    expect(hasInterpolatedMouseMovement(interpolated.slice(0, 5))).toBe(false);
+    expect(hasInterpolatedMouseMovement(uneven)).toBe(false);
+  });
+
+  it("detects clicks released within milliseconds of the press", () => {
+    const click = (pressMs: number | undefined, extra: Partial<ClickSample> = {}): ClickSample => ({
+      x: 10,
+      y: 10,
+      t: 1_000,
+      isTrusted: true,
+      detail: 1,
+      ...(pressMs === undefined ? {} : { pressMs }),
+      ...extra,
+    });
+
+    expect(hasInstantClickPress([click(0.1)])).toBe(true);
+    expect(hasInstantClickPress([click(85)])).toBe(false);
+    expect(hasInstantClickPress([click(undefined)])).toBe(false);
+    // Keyboard activation and taps have browser-synthesized presses.
+    expect(hasInstantClickPress([click(0, { detail: 0 })])).toBe(false);
+    expect(
+      hasInstantClickPress([click(0)], [{ t: 950, isTrusted: true, kind: "start" }]),
+    ).toBe(false);
+  });
+
+  it("detects repeated dead-centre clicks", () => {
+    const click = (isTargetCentered: boolean, detail = 1): ClickSample => ({
+      x: 10,
+      y: 10,
+      t: 1_000,
+      isTrusted: true,
+      detail,
+      isTargetCentered,
+    });
+
+    expect(hasCenteredClicks([click(true), click(true)])).toBe(true);
+    expect(hasCenteredClicks([click(true), click(false)])).toBe(false);
+    expect(hasCenteredClicks([click(true), click(true, 0)])).toBe(false);
+  });
+
+  it("uses the fractional pointermove position that mousemove truncates", () => {
+    const run = (pointerType: string | undefined, offset = 0) => {
+      const context = createCapturingTarget();
+      const detector = createBehavioralClientDetector({ context });
+      detector.start();
+      for (const move of interpolated) {
+        if (pointerType) {
+          context.emit("pointermove", {
+            pointerType,
+            clientX: move.preciseX! + offset,
+            clientY: move.preciseY,
+          });
+        }
+        context.emit("mousemove", { clientX: move.x, clientY: move.y, isTrusted: true });
+      }
+      const result = detector.getResult();
+      detector.stop();
+      expect(context.count("pointermove")).toBe(0);
+      return result.signals.find(({ id }) => id === "interpolated-mouse-path")?.triggered;
+    };
+
+    expect(run("mouse")).toBe(true);
+    expect(run(undefined)).toBe(false);
+    // A pen's pointer, or one that disagrees with the mouse event, is ignored.
+    expect(run("pen")).toBe(false);
+    expect(run("mouse", 40)).toBe(false);
+  });
+
+  it("records press duration and whether clicks land dead-centre", () => {
+    const context = createCapturingTarget();
+    const detector = createBehavioralClientDetector({ context });
+    const element = (
+      rect: { left: number; top: number; width: number; height: number },
+      parentElement: unknown = null,
+    ) => ({ getBoundingClientRect: () => rect, parentElement });
+    const button = element({ left: 100, top: 100, width: 120, height: 40 });
+    const label = element({ left: 140, top: 112, width: 40, height: 14 }, button);
+    // Past the ancestor depth limit, the button's centre is no longer checked.
+    const buried = [0, 1, 2, 3].reduce<unknown>(
+      (parent) => element({ left: 0, top: 0, width: 8, height: 8 }, parent),
+      button,
+    );
+    const click = (target: unknown, clientX = 160, clientY = 120) =>
+      context.emit("click", { clientX, clientY, detail: 1, isTrusted: true, target });
+    const signal = (id: string) =>
+      detector.getResult().signals.find((candidate) => candidate.id === id)?.triggered;
+
+    detector.start();
+
+    // A slow press, a release with no press seen, then off-centre, buried,
+    // and geometry-less targets.
+    context.emit("mousedown", { timeStamp: 1_000 });
+    context.emit("mouseup", { timeStamp: 1_090 });
+    click(button, 110, 105);
+    context.emit("mouseup", { timeStamp: 2_000 });
+    click(buried);
+    click({});
+    expect(signal("instant-click-press")).toBe(false);
+    expect(signal("centered-clicks")).toBe(false);
+
+    // A scripted press on the label, aimed at the button it sits in.
+    context.emit("mousedown", { timeStamp: 3_000 });
+    context.emit("mouseup", { timeStamp: 3_000.2 });
+    click(label);
+    click(button);
+    expect(signal("instant-click-press")).toBe(true);
+    expect(signal("centered-clicks")).toBe(true);
+
+    detector.stop();
+    expect(context.count("mousedown")).toBe(0);
+    expect(context.count("mouseup")).toBe(0);
   });
 });

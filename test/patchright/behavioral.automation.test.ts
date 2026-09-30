@@ -57,6 +57,35 @@ describe("patchright behavioral detection — automated interaction patterns", (
     await context.close();
   });
 
+  it("flags Playwright's default mouse input as scripted", async () => {
+    const { context, page } = await openHarnessPage(browser, server.baseUrl);
+    await page.evaluate(() => {
+      const detector = window.__detection.createBehavioralClientDetector({ context: window });
+      Object.assign(window, { __defaultObservation: detector.observe(1_500) });
+    });
+
+    // Interpolated steps, then clicks aimed at element centres with no hold.
+    await page.mouse.move(40, 40);
+    await page.mouse.move(600, 400, { steps: 10 });
+    await page.locator("#click-target").click();
+    await page.locator("#typing-target").click();
+
+    type Observation = Promise<{
+      isLegitClient: boolean;
+      signals: Array<{ id: string; triggered: boolean }>;
+    }>;
+    const result = await page.evaluate(
+      () => (window as unknown as { __defaultObservation: Observation }).__defaultObservation,
+    );
+
+    expect(triggeredSignalIds(result.signals)).toEqual(
+      expect.arrayContaining(["interpolated-mouse-path", "instant-click-press", "centered-clicks"]),
+    );
+    expect(result.isLegitClient).toBe(false);
+
+    await context.close();
+  });
+
   it("flags teleport mouse jumps", async () => {
     const { context, page } = await openHarnessPage(browser, server.baseUrl);
     const result = await runBehavioralScenario(page, "teleport-mouse", 500);

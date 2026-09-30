@@ -363,6 +363,9 @@ diagnostic objects.
 | `no-mouse-activity` | 0.20 | low | Pointer clicks with zero mouse/touch events |
 | `click-without-mouse-movement` | 0.35 | high | Click with no mouse or touch activity in the prior 2s |
 | `linear-mouse-movement` | 0.25 | medium | Straight path cut into equal steps or covered at uniform speed |
+| `interpolated-mouse-path` | 0.40 | high | Six or more mouse moves repeat an identical step vector (compared on the fractional `pointermove` position), as `mouse.move(x, y, { steps })` produces |
+| `instant-click-press` | 0.30 | medium | A mouse button released under 5 ms after being pressed; tap-driven clicks are exempt |
+| `centered-clicks` | 0.35 | medium | Two or more clicks land within 1 px of the centre of their target, or one of its three nearest ancestors (targets at least 16 px square) |
 | `zero-mouse-movement-deltas` | 0.30 | medium | More than 50 mouse events all report zero `movementX`/`movementY` |
 | `cdp-input-coordinate-leak` | 0.20 | low | Two distinct trusted pointer positions have identical page/screen coordinates; a soft CDP hint because ordinary window/scroll geometry can collide |
 | `teleport-mouse` | 0.40 | high | Implausible cursor jumps between closely-spaced events |
